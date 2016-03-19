@@ -148,6 +148,7 @@ class CoverageData {
 
   // Vector of coverage guard arrays, protected by mu.
   InternalMmapVectorNoCtor<s32*> guard_array_vec;
+  InternalMmapVectorNoCtor<uptr> guard_len_vec;
 
   // Vector of module and compilation unit pc ranges.
   InternalMmapVectorNoCtor<NamedPcRange> comp_unit_name_vec;
@@ -279,8 +280,14 @@ void CoverageData::Disable() {
 void CoverageData::ReinitializeGuards() {
   // Assuming single thread.
   atomic_store(&pc_array_index, 0, memory_order_relaxed);
-  for (uptr i = 0; i < guard_array_vec.size(); i++)
-    InitializeGuardArray(guard_array_vec[i]);
+  for (uptr i = 0; i < guard_array_vec.size(); i++) {
+    if (guard_array_vec[i] != nullptr) {
+      InitializeGuardArray(guard_array_vec[i]);
+    } else {
+      uptr idx = atomic_load_relaxed(&pc_array_index);
+      atomic_store_relaxed(&pc_array_index, idx + guard_len_vec[i]);
+    }
+  }
 }
 
 static bool GuardIsMapped(s32* guard, const ListOfModules& modules) {
@@ -299,21 +306,11 @@ void CoverageData::ValidateGuards() {
   modules.init();
 
   SpinMutexLock l(&mu);
-  s32** guard_out = guard_array_vec.begin();
-  for (s32* const* guard_in = guard_array_vec.begin();
-       guard_in != guard_array_vec.end(); ++guard_in) {
-    if (GuardIsMapped(*guard_in, modules)) {
-      if (guard_out != guard_in) {
-	*guard_out = *guard_in;
-      }
-      ++guard_out;
-    } else {
-      Report("SanitizerCoverage: unmapped guard array %p\n", *guard_in);
+  for (s32** guard_ptr = guard_array_vec.begin();
+       guard_ptr != guard_array_vec.end(); ++guard_ptr) {
+    if (!GuardIsMapped(*guard_ptr, modules)) {
+      *guard_ptr = nullptr;
     }
-  }
-  while (guard_out != guard_array_vec.end()) {
-    guard_array_vec.pop_back();
-    // Problematic: assumes pop_back() won't relocate/invalidate.
   }
 }
 
@@ -419,6 +416,7 @@ void CoverageData::InitializeGuards(s32 *guards, uptr n,
   uptr range_beg = range_end - n;
   comp_unit_name_vec.push_back({comp_unit_name, range_beg, range_end});
   guard_array_vec.push_back(guards);
+  guard_len_vec.push_back(n);
   UpdateModuleNameVec(caller_pc, range_beg, range_end);
 }
 
