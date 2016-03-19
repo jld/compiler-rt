@@ -284,14 +284,14 @@ void CoverageData::ReinitializeGuards() {
 }
 
 static bool GuardIsMapped(s32* guard, const ListOfModules& modules) {
-    for (const LoadedModule &module : modules) {
-      for (const auto &range : module.ranges()) {
-	if (range.beg <= (uptr)guard && (uptr)guard < range.end) {
-	  return true;
-	}
+  for (const LoadedModule &module : modules) {
+    for (const auto &range : module.ranges()) {
+      if (range.beg <= (uptr)guard && (uptr)guard < range.end) {
+	return true;
       }
     }
-    return false;
+  }
+  return false;
 }
 
 void CoverageData::ValidateGuards() {
