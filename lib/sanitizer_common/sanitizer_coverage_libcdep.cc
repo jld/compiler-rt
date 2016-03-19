@@ -105,6 +105,7 @@ class CoverageData {
                         uptr caller_pc);
   void InitializeCounters(u8 *counters, uptr n);
   void ReinitializeGuards();
+  void ValidateGuards();
   uptr GetNumberOf8bitCounters();
   uptr Update8bitCounterBitsetAndClearCounters(u8 *bitset);
 
@@ -280,6 +281,40 @@ void CoverageData::ReinitializeGuards() {
   atomic_store(&pc_array_index, 0, memory_order_relaxed);
   for (uptr i = 0; i < guard_array_vec.size(); i++)
     InitializeGuardArray(guard_array_vec[i]);
+}
+
+static bool GuardIsMapped(s32* guard, const ListOfModules& modules) {
+    for (const LoadedModule &module : modules) {
+      for (const auto &range : module.ranges()) {
+	if (range.beg <= (uptr)guard && (uptr)guard < range.end) {
+	  return true;
+	}
+      }
+    }
+    return false;
+}
+
+void CoverageData::ValidateGuards() {
+  ListOfModules modules;
+  modules.init();
+
+  SpinMutexLock l(&mu);
+  s32** guard_out = guard_array_vec.begin();
+  for (s32* const* guard_in = guard_array_vec.begin();
+       guard_in != guard_array_vec.end(); ++guard_in) {
+    if (GuardIsMapped(*guard_in, modules)) {
+      if (guard_out != guard_in) {
+	*guard_out = *guard_in;
+      }
+      ++guard_out;
+    } else {
+      Report("SanitizerCoverage: unmapped guard array %p\n", *guard_in);
+    }
+  }
+  while (guard_out != guard_array_vec.end()) {
+    guard_array_vec.pop_back();
+    // Problematic: assumes pop_back() won't relocate/invalidate.
+  }
 }
 
 void CoverageData::ReInit() {
@@ -937,8 +972,10 @@ void ReInitializeCoverage(bool enabled, const char *dir) {
 }
 
 void CoverageUpdateMapping() {
-  if (coverage_enabled)
+  if (coverage_enabled) {
+    coverage_data.ValidateGuards();
     CovUpdateMapping(coverage_dir);
+  }
 }
 
 } // namespace __sanitizer
