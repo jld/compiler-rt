@@ -148,7 +148,6 @@ class CoverageData {
 
   // Vector of coverage guard arrays, protected by mu.
   InternalMmapVectorNoCtor<s32*> guard_array_vec;
-  InternalMmapVectorNoCtor<uptr> guard_len_vec;
 
   // Vector of module and compilation unit pc ranges.
   InternalMmapVectorNoCtor<NamedPcRange> comp_unit_name_vec;
@@ -284,8 +283,13 @@ void CoverageData::ReinitializeGuards() {
     if (guard_array_vec[i] != nullptr) {
       InitializeGuardArray(guard_array_vec[i]);
     } else {
+      // The guard has been unmapped; skip over the corresponding
+      // pc_array range so that indices stay valid.
+      CHECK_EQ(guard_array_vec.size(), comp_unit_name_vec.size());
+      const auto& r = comp_unit_name_vec[i];
       uptr idx = atomic_load_relaxed(&pc_array_index);
-      atomic_store_relaxed(&pc_array_index, idx + guard_len_vec[i]);
+      CHECK_EQ(idx, r.beg);
+      atomic_store_relaxed(&pc_array_index, r.end);
     }
   }
 }
@@ -301,6 +305,8 @@ static bool GuardIsMapped(s32* guard, const ListOfModules& modules) {
   return false;
 }
 
+// Call this after dlclose() to zero out now-unmapped guard pointers.
+// *Not* async signal safe; avoid using after multithreaded fork.
 void CoverageData::ValidateGuards() {
   ListOfModules modules;
   modules.init();
@@ -309,6 +315,7 @@ void CoverageData::ValidateGuards() {
   for (s32** guard_ptr = guard_array_vec.begin();
        guard_ptr != guard_array_vec.end(); ++guard_ptr) {
     if (!GuardIsMapped(*guard_ptr, modules)) {
+      Report("Sanitizer Coverage: unmapped guard %p\n", *guard_ptr);
       *guard_ptr = nullptr;
     }
   }
@@ -416,7 +423,6 @@ void CoverageData::InitializeGuards(s32 *guards, uptr n,
   uptr range_beg = range_end - n;
   comp_unit_name_vec.push_back({comp_unit_name, range_beg, range_end});
   guard_array_vec.push_back(guards);
-  guard_len_vec.push_back(n);
   UpdateModuleNameVec(caller_pc, range_beg, range_end);
 }
 
